@@ -1,0 +1,299 @@
+---
+title: "COVID-19 Data Report"
+author: "M. Jovanovski"
+date: "2023-03-17"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+## 1) Importing Data
+
+I will start by importing libraries and reading in the data from the four main csv files.
+
+```{r libraries_and_files}
+library(tidyverse)
+library(lubridate)
+url_in = 
+  "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+  
+file_names = c("time_series_covid19_confirmed_US.csv",
+               "time_series_covid19_confirmed_global.csv", 
+               "time_series_covid19_deaths_US.csv",
+               "time_series_covid19_deaths_global.csv",
+               "time_series_covid19_recovered_global.csv")
+urls = str_c(url_in, file_names)
+
+global_cases = read_csv(urls[2])
+global_deaths = read_csv(urls[4])
+US_cases = read_csv(urls[1])
+US_deaths = read_csv(urls[3])
+```
+
+## 2) Tidying and Transforming Data
+
+After looking at global_cases and global_deaths, I would like to tidy those data sets and put each variable(date, cases, deaths) in their own column.
+Also, I don't need Lat and Long for the analysis I am planning, so I will get rid of those and rename Country/Region and Province/State to be more R friendly. 
+
+```{r tidy_global_data}
+global_cases = global_cases %>% 
+  pivot_longer(cols = -c('Province/State','Country/Region', Lat, Long),names_to = "date",values_to = "cases") %>%
+  select(-c(Lat,Long))
+global_deaths = global_deaths %>% 
+  pivot_longer(cols = -c('Province/State','Country/Region', Lat, Long),names_to = "date",values_to = "deaths") %>%
+  select(-c(Lat,Long))
+global = global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = 'Country/Region', 
+         Province_State  = 'Province/State') %>%
+  mutate(date = mdy(date))
+global
+```
+
+Now we want to look at a summary of the data to see if there are any problems.
+
+```{r data_summary}
+summary(global)
+```
+
+I will filter out and keep only cases that are positive. After that we will again look at the summary.
+
+```{r transform_global_data}
+global = global %>% 
+  filter(cases>0)
+summary(global)
+```
+
+I want to see cases that are bigger than 90000000.
+
+```{r initial_analysis}
+global %>%
+  filter(cases>90000000)
+```
+This shows data starting from July 2022.
+
+Moving over to US data sets, I will tidy and transform in the same manner.
+
+```{r tidy_US_Data}
+US_cases  = US_cases %>% 
+  pivot_longer(cols = -(UID:Combined_Key),
+                        names_to = "date",
+                        values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat,Long_))
+US_deaths = US_deaths %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+                        names_to = "date",
+                        values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat,Long_))
+US = US_cases %>%
+  full_join(US_deaths) %>%
+  filter(cases>0)
+```
+
+We're going to do comparative analysis between the data. First we will combine the data in a combined key.
+
+```{r global_and_US }
+global = global %>%
+  unite("Combined_Key",
+        c(Province_State,Country_Region),
+        sep = ",",
+        na.rm = TRUE,
+        remove = FALSE)
+uid_lookup_url = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid = read.csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+global = global %>%
+  left_join(uid, by= c("Province_State", "Country_Region")) %>%
+  select(-c(UID,FIPS)) %>%
+  select(Province_State, Country_Region, date, cases, deaths,Combined_Key)
+global
+```
+
+## 3) Visualizing Data
+
+We're going to focus on analyzing US as a whole, and for a given state, to see what sorts of things we might want to do.
+
+I'm going to start with US by state.
+
+```{r US_state_data}
+US_by_state = US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths)) %>%
+  mutate(death_rate = deaths/cases) %>%
+  select(Province_State, Country_Region, date, cases, deaths, death_rate) %>%
+  ungroup()
+US_by_state
+```
+
+Now I'm going to look at the totals of the US.
+
+```{r total_state_data}
+US_totals = US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths)) %>%
+  mutate(death_rate = deaths/cases) %>%
+  select(Country_Region, date, cases, deaths, death_rate) %>%
+  ungroup()
+US_totals
+```
+
+Let's visualize some of this data.
+
+```{r visualization}
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases"))+
+  geom_line(aes(y = deaths, color = "deaths"))+
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID-19 in US", y = NULL)
+```
+
+We can do the same thing and analyze cases vs. deaths in the state of Pennsylvania.
+
+```{r pennsylvania_cases_and_deaths}
+state = "Pennsylvania"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases"))+
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID-19 in ", state), y = NULL)
+```
+
+We can see that the deaths curve is significantly turning down but follows the same pattern as the cases.
+
+Let's look at what date had the maximum deaths in Pennsylvania and all of the US.
+
+```{r max_deaths}
+max(US_by_state$date)
+max(US_by_state$deaths)
+max(US_totals$date)
+max(US_totals$deaths)
+```
+
+I can see the maximum number of death's as of today's days. This raises the question of whether or not the cases have truly leveled off.
+
+## 4) Analyzing Data
+
+In order to analyze this, we will add new columns to the existing data sets so that we can see the new cases and new deaths everyday.
+
+```{r data_transformation}
+US_by_state = US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+US_totals = US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+```
+
+Let's visualize the data once more to see what it does.
+
+```{r visualizing_US_totals_data}
+US_totals %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases"))+
+  geom_point(aes(color= "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths"))+
+  scale_y_log10()+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90))+
+  labs(title = "New COVID-19 in US", y = NULL)
+```
+
+It seems like I still have the same number of new cases per day and the number of new deaths per day. It eventually flattens out but is still up a little bit over what it was before.
+
+Let's see what's happening in Pennsylvania right now.
+
+```{r visualizing_US_state_data}
+US_by_state %>%
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases"))+
+  geom_point(aes(color= "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths"))+
+  scale_y_log10()+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90))+
+  labs(title = str_c("New COVID-19 in ", state), y = NULL)
+```
+
+It seems like we need to look at another state's data after looking at one state's data. The question raised here is which state is the worst and which is the best?
+
+We'll transform the data once again before we do a little bit of an analysis.
+
+```{r transformation US_State_totals}
+US_state_totals = US_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases)) %>%
+  mutate(death_ratio =deaths/cases ) %>%
+  filter(cases >0)
+
+US_state_totals %>%
+  slice_min(death_ratio, n = 10) %>% 
+  select(Province_State, death_ratio, everything())
+```
+
+The worst states with the highest deaths are:
+
+```{r highest_deaths}
+US_state_totals %>%
+  slice_min(death_ratio, n = 10) %>% 
+  select(Province_State, death_ratio, everything())
+```
+
+We can see which states fair to the worst of all states so far in terms of deaths per 1000.
+
+## 5) Modelling Data
+
+For purposes of our demonstration, we are going to choose to apply a linear model.
+
+```{r modelling_data}
+mod = lm(deaths ~ cases, data = US_state_totals)
+summary(mod)
+```
+```{r modelling_data_2}
+US_tot_w_pred = US_state_totals %>%
+  mutate(pred = predict(mod))
+US_tot_w_pred %>% ggplot() + 
+  geom_point(aes(x = cases, y = deaths, color = "Actual")) + 
+  geom_line(aes(x = cases, y = pred, color = "Predicted"))+
+  scale_color_manual(name = "Death Count", values = c("Actual" = "green", "Predicted" = "purple"))+
+  xlab("No. of Cases")+
+  ylab("No. of Deaths")+
+  ggtitle("COVID-19 Cases vs Deaths")
+```
+
+We can see that the model does a reasonably good job of predicting deaths at the lower end quite well. Later on, it represents that the number of deaths have decreased however the number of cases were still increasing. 
+
+## 6) Conclusions
+
+a) There has been leveling off of deaths due to to COVID19 in the US.
+b) The cases are increasing however the deaths due to COVID-19 are decreasing over the year. 
+
+## 7) Bias
+
+The bias in my analysis could be affected by the fact that the data I am using is old and not updated to exact numbers. The data could also make me interested in looking what is specifically happening with the current state I'm living in. The data provided on a US website might not be accurate in the case of countries that have not reported data in a proper way. I have made my analysis accordance with good research and while implementing inclusion.
+
+```{r sessionInfo, echo = FALSE}
+sessionInfo()
+```
